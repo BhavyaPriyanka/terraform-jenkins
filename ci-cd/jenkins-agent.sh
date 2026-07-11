@@ -1,0 +1,1 @@
+sudo dnf install java-21-amazon-corretto -y
