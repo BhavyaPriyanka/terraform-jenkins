@@ -71,6 +71,38 @@ module "records" {
         module.jenkins_agent.private_ip
       ]
       allow_overwrite = true
+    },
+    {
+      name    = "nexus"
+      type    = "A"
+      ttl     = 1
+      records = [
+        aws_instance.nexus.private_ip
+      ]
+      allow_overwrite = true
     }
   ]
+}
+
+resource "aws_instance" "nexus" {
+  ami           = data.aws_ami.ami_info.id
+  instance_type = "t3.small"
+  vpc_security_group_ids = ["sg-0ad31bf3450f94454"]
+  subnet_id = "subnet-07fa85a74ee034939"
+  key_name               = aws_key_pair.jenkins_key.key_name
+
+  associate_public_ip_address = true
+
+
+  user_data = file("install-nexus.sh")
+
+    root_block_device {
+    volume_size = 30
+    volume_type = "gp3"
+  }
+
+
+  tags = {
+    Name = "nexus-server"
+  }
 }
