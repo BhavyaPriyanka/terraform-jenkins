@@ -1,18 +1,22 @@
 module "jenkins_master" {
-  source  = "terraform-aws-modules/ec2-instance/aws"
+  source = "terraform-aws-modules/ec2-instance/aws"
 
   name = "jenkins-tf"
 
   instance_type          = "t3.small"
-  vpc_security_group_ids = ["sg-0ad31bf3450f94454"] #replace your SG
-  subnet_id = "subnet-07fa85a74ee034939" #replace your Subnet
-  ami = data.aws_ami.ami_info.id
-
+  ami                    = data.aws_ami.ami_info.id
+  subnet_id              = "subnet-07fa85a74ee034939"
+  vpc_security_group_ids = ["sg-0ad31bf3450f94454"]
   key_name               = aws_key_pair.jenkins_key.key_name
 
-  
-
   user_data = file("jenkins.sh")
+
+  root_block_device = {
+  size                  = 30
+  type                  = "gp3"
+  delete_on_termination = true
+}
+
   tags = {
     Name = "jenkins-master"
   }
@@ -42,6 +46,13 @@ module "jenkins_agent" {
   key_name               = aws_key_pair.jenkins_key.key_name
 
   user_data = file("jenkins-agent.sh")
+
+   root_block_device = {
+  size                  = 30
+  type                  = "gp3"
+  delete_on_termination = true
+}
+
   tags = {
     Name = "jenkins-agent"
   }
@@ -77,7 +88,7 @@ module "records" {
       type    = "A"
       ttl     = 1
       records = [
-        aws_instance.nexus.private_ip
+        aws_instance.nexus.public_ip
       ]
       allow_overwrite = true
     }
@@ -99,6 +110,7 @@ resource "aws_instance" "nexus" {
     root_block_device {
     volume_size = 30
     volume_type = "gp3"
+      delete_on_termination = true
   }
 
 

@@ -1,45 +1,39 @@
 #!/bin/bash
-
 set -e
 
-# Update packages
-dnf update -y
+# Update system
+yum update -y
 
-# Install Java 17
-dnf install java-17-amazon-corretto -y
+# Install required packages
+yum install -y java-17-amazon-corretto wget tar
 
-# Create nexus user
-useradd nexus
+# Create nexus user if it doesn't exist
+id nexus >/dev/null 2>&1 || useradd nexus
 
 # Download Nexus
 cd /opt
+wget -O nexus.tar.gz https://download.sonatype.com/nexus/3/nexus-3.94.0-12-linux-x86_64.tar.gz
 
-wget https://download.sonatype.com/nexus/3/nexus-3.94.0-12-linux-x86_64.tar.gz
+# Extract Nexus
+tar -xzf nexus.tar.gz
 
-# Extract
-tar -xzf nexus-3.94.0-12-linux-x86_64.tar.gz
+# Rename for convenience
+mv nexus-3.94.0-12 nexus
 
 # Create data directory
 mkdir -p /opt/sonatype-work
 
-# Permissions
-chown -R nexus:nexus /opt/nexus-3.94.0-12
+# Set ownership
+chown -R nexus:nexus /opt/nexus
 chown -R nexus:nexus /opt/sonatype-work
 
-# Configure Nexus user
-echo 'run_as_user="nexus"' > /opt/nexus-3.94.0-12/bin/nexus.rc
+# Run Nexus as nexus user
+echo 'run_as_user="nexus"' > /opt/nexus/bin/nexus.rc
 
-# Reduce JVM memory for free-tier instances
-cat > /opt/nexus-3.94.0-12/bin/nexus.vmoptions <<EOF
--Xms512m
--Xmx512m
--XX:MaxDirectMemorySize=512m
--XX:+UnlockDiagnosticVMOptions
--XX:+LogVMOutput
--XX:LogFile=/opt/sonatype-work/nexus3/log/jvm.log
--XX:-OmitStackTraceInFastThrow
--Djava.net.preferIPv4Stack=true
-EOF
+# Reduce JVM memory (DON'T overwrite nexus.vmoptions)
+sed -i 's/^-Xms.*/-Xms512m/' /opt/nexus/bin/nexus.vmoptions
+sed -i 's/^-Xmx.*/-Xmx512m/' /opt/nexus/bin/nexus.vmoptions
+sed -i 's/^-XX:MaxDirectMemorySize=.*/-XX:MaxDirectMemorySize=512m/' /opt/nexus/bin/nexus.vmoptions
 
 # Create systemd service
 cat > /etc/systemd/system/nexus.service <<EOF
@@ -52,19 +46,35 @@ Type=forking
 LimitNOFILE=65536
 User=nexus
 Group=nexus
-
-ExecStart=/opt/nexus-3.94.0-12/bin/nexus start
-ExecStop=/opt/nexus-3.94.0-12/bin/nexus stop
-
-Restart=on-abort
+ExecStart=/opt/nexus/bin/nexus start
+ExecStop=/opt/nexus/bin/nexus stop
+Restart=on-failure
+TimeoutStartSec=600
+TimeoutStopSec=600
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# Enable and start Nexus
+# Reload systemd
 systemctl daemon-reload
+
+# Enable Nexus
 systemctl enable nexus
+
+# Start Nexus
 systemctl start nexus
 
-echo "Nexus installation completed"
+# Wait for startup
+sleep 30
+
+# Show status
+systemctl status nexus --no-pager
+
+echo "======================================"
+echo "Nexus Installed Successfully!"
+echo "URL: http://<PUBLIC-IP>:8081"
+echo "======================================"
+
+#repo URL
+# http://nexus-server:8081/repository/maven-release/ 
