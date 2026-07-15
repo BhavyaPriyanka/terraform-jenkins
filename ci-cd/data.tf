@@ -19,3 +19,7 @@ data "aws_ami" "ami_info" {
   }
 }
 
+data "aws_subnet" "jenkins_subnet" {
+  id = "subnet-07fa85a74ee034939"
+}
+

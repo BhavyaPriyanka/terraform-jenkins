@@ -1,54 +1,100 @@
 #!/bin/bash
 set -e
 
+echo "========== Installing Jenkins =========="
+
 # Add Jenkins repository
 curl -fsSL https://pkg.jenkins.io/redhat-stable/jenkins.repo \
     -o /etc/yum.repos.d/jenkins.repo
 
-# Import Jenkins GPG key
-sudo rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
 
-# Install Java
-sudo yum install -y java-21-amazon-corretto
+yum install -y \
+    java-21-amazon-corretto \
+    jenkins \
+    rsync \
+    xfsprogs
 
-# Install Jenkins
-sudo yum install -y jenkins
+yum install -y \
+    java-21-amazon-corretto \
+    jenkins \
+    git \
+    rsync \
+    xfsprogs \
+    unzip \
+    wget \
+    curl \
+    jq \
+    zip \
+    tar \
+    which \
+    tree \
+    vim
 
+echo "========== Preparing Jenkins temp directory =========="
 
+mkdir -p /var/lib/jenkins/tmp
+chown -R jenkins:jenkins /var/lib/jenkins
+chmod 1777 /var/lib/jenkins/tmp
 
-echo "Creating Jenkins temporary directory..."
+mkdir -p /etc/systemd/system/jenkins.service.d
 
-sudo mkdir -p /var/lib/jenkins/tmp
-
-echo "Setting ownership and permissions..."
-
-sudo chown jenkins:jenkins /var/lib/jenkins/tmp
-sudo chmod 1777 /var/lib/jenkins/tmp
-
-
-echo "Creating Jenkins systemd override..."
-
-sudo mkdir -p /etc/systemd/system/jenkins.service.d
-
-sudo tee /etc/systemd/system/jenkins.service.d/override.conf >/dev/null <<EOF
+cat >/etc/systemd/system/jenkins.service.d/override.conf <<EOF
 [Service]
 Environment="JAVA_OPTS=-Djava.io.tmpdir=/var/lib/jenkins/tmp"
 EOF
 
+systemctl daemon-reload
 
-echo "Reloading systemd configuration..."
+echo "========== Waiting for EBS =========="
 
-sudo systemctl daemon-reload
+while true
+do
+    if [ -b /dev/nvme1n1 ]; then
+        DEVICE=/dev/nvme1n1
+        break
+    elif [ -b /dev/xvdf ]; then
+        DEVICE=/dev/xvdf
+        break
+    fi
+    sleep 2
+done
 
+echo "EBS Device: $DEVICE"
 
-echo "Restarting Jenkins..."
+echo "========== Formatting if required =========="
 
-sudo systemctl restart jenkins
+if ! blkid "$DEVICE" >/dev/null 2>&1
+then
+    mkfs.xfs "$DEVICE"
+fi
 
+mkdir -p /mnt/jenkins
 
-echo "Checking Jenkins environment..."
+mount "$DEVICE" /mnt/jenkins
 
-sudo systemctl show jenkins --property=Environment
+UUID=$(blkid -s UUID -o value "$DEVICE")
 
+echo "========== Copying Jenkins Home =========="
 
-echo "Jenkins temp directory configuration completed successfully."
+if [ -z "$(ls -A /mnt/jenkins)" ]; then
+    rsync -a /var/lib/jenkins/ /mnt/jenkins/
+fi
+
+chown -R jenkins:jenkins /mnt/jenkins
+
+umount /mnt/jenkins
+
+mkdir -p /var/lib/jenkins
+
+grep -q "/var/lib/jenkins" /etc/fstab || \
+echo "UUID=$UUID /var/lib/jenkins xfs defaults,nofail 0 2" >> /etc/fstab
+
+mount -a
+
+echo "========== Starting Jenkins =========="
+
+systemctl enable jenkins
+systemctl start jenkins
+
+echo "========== Completed =========="
