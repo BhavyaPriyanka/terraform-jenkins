@@ -90,9 +90,33 @@ echo "UUID=$UUID /var/lib/jenkins xfs defaults,nofail 0 2" >> /etc/fstab
 
 mount -a
 
+
 echo "========== Starting Jenkins =========="
 
 systemctl enable jenkins
 systemctl start jenkins
+
+echo "========== Waiting for Jenkins =========="
+
+until curl -s http://localhost:8080/login >/dev/null
+do
+    sleep 5
+done
+
+echo "========== Installing Jenkins Plugins =========="
+
+jenkins-plugin-cli --plugins \
+workflow-aggregator \
+git \
+pipeline-stage-view \
+pipeline-utility-steps \
+credentials-binding \
+nexus-artifact-uploader \
+ssh-agent \
+ansible
+
+echo "========== Restarting Jenkins =========="
+
+systemctl restart jenkins
 
 echo "========== Completed =========="

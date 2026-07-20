@@ -1,0 +1,12 @@
+workflow-aggregator
+git
+pipeline-stage-view
+pipeline-utility-steps
+credentials-binding
+ssh-agent
+nexus-artifact-uploader
+ansible
+job-dsl
+configuration-as-code
+matrix-auth
+role-strategy
