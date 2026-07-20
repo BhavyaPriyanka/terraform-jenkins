@@ -23,14 +23,12 @@ yum install -y \
     xfsprogs \
     unzip \
     wget \
-    curl \
     jq \
     zip \
     tar \
     which \
     tree \
     vim
-
 echo "========== Preparing Jenkins temp directory =========="
 
 mkdir -p /var/lib/jenkins/tmp

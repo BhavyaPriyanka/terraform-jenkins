@@ -35,4 +35,12 @@ sudo yum install -y terraform
 sudo usermod -aG docker ec2-user
 sudo usermod -aG docker jenkins
 
+echo "========== Preparing Jenkins Agent Workspace =========="
+
+sudo mkdir -p /opt/jenkins
+sudo chown -R ec2-user:ec2-user /opt/jenkins
+
+mkdir -p /home/ec2-user/.ssh
+chmod 700 /home/ec2-user/.ssh
+
 sudo yum install zip -y
