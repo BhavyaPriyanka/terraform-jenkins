@@ -153,7 +153,7 @@ Group=sonarqube
 
 Environment="SONAR_WEB_JAVAOPTS=-Xms512m -Xmx1024m"
 Environment="SONAR_CE_JAVAOPTS=-Xms512m -Xmx1024m"
-Environment="SONAR_SEARCH_JAVAOPTS=-Xms512m -Xmx1024m"
+Environment="SONAR_SEARCH_JAVAOPTS=-Xms1024m -Xmx1024m"
 
 
 ExecStart=/opt/sonarqube/bin/linux-x86-64/sonar.sh start
@@ -205,3 +205,5 @@ echo "URL : http://<PUBLIC-IP>:9000"
 echo "Username : admin"
 echo "Password : admin"
 echo "======================================="
+
+# sqa_58371adda5b10b910308fb48739a0df8c70ca06f
