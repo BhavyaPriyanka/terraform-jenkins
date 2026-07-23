@@ -15,5 +15,9 @@ terraform {
 
 #provide authentication here
 provider "aws" {
-  region = "us-east-1"
+  region = var.aws_region
+
+    default_tags {
+    tags = local.common_tags
+  }
 }

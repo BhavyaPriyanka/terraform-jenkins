@@ -19,7 +19,25 @@ data "aws_ami" "ami_info" {
   }
 }
 
-data "aws_subnet" "jenkins_subnet" {
-  id = "subnet-07fa85a74ee034939"
+
+
+data "aws_ssm_parameter" "vpc_id" {
+  name = "/${var.project_name}/${var.environment}/vpc_id"
 }
+
+data "aws_ssm_parameter" "public_subnet_ids" {
+  name = "/${var.project_name}/${var.environment}/public_subnet_ids"
+}
+
+data "aws_subnet" "public" {
+  id = local.public_subnet_id
+}
+
+data "aws_key_pair" "tools" {
+  key_name = var.key_pair_name
+}
+
+
+
+
 

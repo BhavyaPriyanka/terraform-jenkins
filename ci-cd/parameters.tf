@@ -1,7 +1,9 @@
-resource "aws_ssm_parameter" "jenkins_private_key" {
-  name  = "/jenkins/private_key"
-  type  = "SecureString"
-  value = tls_private_key.jenkins.private_key_pem
+
+
+resource "aws_ssm_parameter" "tools_sg_id" {
+  name  = "/${var.project_name}/${var.environment}/tools_sg_id"
+  type  = "String"
+  value =  aws_security_group.devops_tools.id
 }
 
 

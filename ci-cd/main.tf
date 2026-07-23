@@ -3,10 +3,10 @@ module "jenkins_master" {
 
   name = "jenkins-tf"
 
-  instance_type          = "t3.small"
+  instance_type          = var.jenkins_instance_type
   ami                    = data.aws_ami.ami_info.id
-  subnet_id              = "subnet-07fa85a74ee034939"
-  vpc_security_group_ids = ["sg-0ad31bf3450f94454"]
+  subnet_id              = local.public_subnet_id
+  vpc_security_group_ids = [aws_security_group.devops_tools.id]
   key_name               = aws_key_pair.jenkins_key.key_name
 
   user_data = file("jenkins.sh")
@@ -17,53 +17,26 @@ module "jenkins_master" {
   delete_on_termination = true
 }
 
-  tags = {
-    Name = "jenkins-master"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "${local.resource_name}-jenkins-master"
+    }
+  )
 }
 
-resource "aws_ebs_volume" "jenkins_home" {
-  availability_zone = data.aws_subnet.jenkins_subnet.availability_zone
-
-  size = 20
-  type = "gp3"
-
-  tags = {
-    Name = "jenkins-home"
-  }
-}
-
-resource "aws_volume_attachment" "jenkins_home" {
-  device_name = "/dev/sdf"
-
-  volume_id   = aws_ebs_volume.jenkins_home.id
-  instance_id = module.jenkins_master.id
-
-  force_detach = true
-}
-
-
-resource "aws_key_pair" "jenkins_key" {
-  key_name   = "jenkins-key"
-  public_key = tls_private_key.jenkins.public_key_openssh
-}
-
-resource "tls_private_key" "jenkins" {
-  algorithm = "RSA"
-  rsa_bits  = 4096
-}
 
 module "jenkins_agent" {
   source  = "terraform-aws-modules/ec2-instance/aws"
 
   name = "jenkins-agent"
 
-  instance_type          = "t3.small"
-  vpc_security_group_ids = ["sg-0ad31bf3450f94454"]
-  # convert StringList to list and get first element
-  subnet_id = "subnet-07fa85a74ee034939"
+  instance_type          = var.jenkins_agent_instance_type
+  vpc_security_group_ids = [aws_security_group.devops_tools.id]
+ 
+  subnet_id = local.public_subnet_id
   ami = data.aws_ami.ami_info.id
-  key_name               = aws_key_pair.jenkins_key.key_name
+  key_name               = data.aws_key_pair.tools.key_name
 
   iam_instance_profile = aws_iam_instance_profile.jenkins_agent.name
 
@@ -75,9 +48,74 @@ module "jenkins_agent" {
   delete_on_termination = true
 }
 
-  tags = {
-    Name = "jenkins-agent"
+  tags = merge(
+
+    local.common_tags,
+
+    {
+      Name = "${local.resource_name}-jenkins-agent"
+    }
+
+  )
+}
+
+resource "aws_instance" "nexus" {
+  ami           = data.aws_ami.ami_info.id
+  instance_type = var.nexus_instance_type
+  vpc_security_group_ids = [aws_security_group.devops_tools.id]
+  subnet_id = local.public_subnet_id
+  key_name               = data.aws_key_pair.tools.key_name
+
+  associate_public_ip_address = true
+
+
+  user_data = file("install-nexus.sh")
+
+    root_block_device {
+    volume_size = 30
+    volume_type = "gp3"
+      delete_on_termination = true
   }
+
+
+  tags = merge(
+
+    local.common_tags,
+
+    {
+      Name = "${local.resource_name}-nexus"
+    }
+
+  )
+}
+
+resource "aws_instance" "sonarqube" {
+  ami           = data.aws_ami.ami_info.id
+  instance_type =  var.sonarqube_instance_type
+
+  subnet_id              = local.public_subnet_id
+  vpc_security_group_ids = [aws_security_group.devops_tools.id]
+  key_name = data.aws_key_pair.tools.key_name
+
+  associate_public_ip_address = true
+
+  user_data = file("install-sonarqube.sh")
+
+  root_block_device {
+    volume_size           = 40
+    volume_type           = "gp3"
+    delete_on_termination = true
+  }
+
+  tags = merge(
+
+    local.common_tags,
+
+    {
+      Name = "${local.resource_name}-sonarqube"
+    }
+
+  )
 }
 
 module "records" {
@@ -113,36 +151,48 @@ module "records" {
         aws_instance.nexus.public_ip
       ]
       allow_overwrite = true
+    },
+    {
+      name    = "sonar"
+      type    = "A"
+      ttl     = 1
+      records = [
+        aws_instance.sonarqube.public_ip
+      ]
+      allow_overwrite = true
     }
   ]
 }
 
-resource "aws_instance" "nexus" {
-  ami           = data.aws_ami.ami_info.id
-  instance_type = "t3.small"
-  vpc_security_group_ids = ["sg-0ad31bf3450f94454"]
-  subnet_id = "subnet-07fa85a74ee034939"
-  key_name               = aws_key_pair.jenkins_key.key_name
-
-  associate_public_ip_address = true
 
 
-  user_data = file("install-nexus.sh")
+resource "aws_ebs_volume" "jenkins_home" {
+  availability_zone = data.aws_subnet.jenkins_subnet.availability_zone
 
-    root_block_device {
-    volume_size = 30
-    volume_type = "gp3"
-      delete_on_termination = true
-  }
+  size = 20
+  type = "gp3"
 
-
-  tags = {
-    Name = "nexus-server"
-  }
+    tags = merge(
+    local.common_tags,
+    {
+      Name = "${local.resource_name}-jenkins-home"
+    }
+  )
 }
 
+resource "aws_volume_attachment" "jenkins_home" {
+  device_name = "/dev/sdf"
+
+  volume_id   = aws_ebs_volume.jenkins_home.id
+  instance_id = module.jenkins_master.id
+
+  force_detach = true
+}
+
+
+
 resource "aws_iam_role" "jenkins_agent" {
-  name = "jenkins-agent-role"
+  name = "${local.resource_name}-jenkins-agent-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -171,8 +221,74 @@ resource "aws_iam_role_policy_attachment" "admin" {
 
 resource "aws_iam_instance_profile" "jenkins_agent" {
 
-  name = "jenkins-agent-profile"
+  name = "${local.resource_name}-jenkins-agent-profile"
 
   role = aws_iam_role.jenkins_agent.name
 
+}
+
+resource "aws_security_group" "devops_tools" {
+
+  name        = "${local.resource_name}-tools-sg"
+  description = "Security Group for Jenkins, Nexus and SonarQube"
+  vpc_id      = data.aws_ssm_parameter.vpc_id.value
+
+  ingress {
+    description = "SSH"
+
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+
+    cidr_blocks = var.allowed_cidrs
+  }
+
+  ingress {
+    description = "Jenkins"
+
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+
+    cidr_blocks = var.allowed_cidrs
+  }
+
+  ingress {
+    description = "Nexus"
+
+    from_port   = 8081
+    to_port     = 8081
+    protocol    = "tcp"
+
+     cidr_blocks = var.allowed_cidrs
+  }
+
+  ingress {
+    description = "SonarQube"
+
+    from_port   = 9000
+    to_port     = 9000
+    protocol    = "tcp"
+
+     cidr_blocks = var.allowed_cidrs
+  }
+
+   egress {
+
+    from_port = 0
+
+    to_port = 0
+
+    protocol = "-1"
+
+    cidr_blocks = var.egress_cidrs
+
+  }
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "${local.resource_name}-tools-sg"
+    }
+  )
 }
