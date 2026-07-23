@@ -7,7 +7,7 @@ module "jenkins_master" {
   ami                    = data.aws_ami.ami_info.id
   subnet_id              = local.public_subnet_id
   vpc_security_group_ids = [aws_security_group.devops_tools.id]
-  key_name               = aws_key_pair.jenkins_key.key_name
+  key_name               = data.aws_key_pair.tools.key_name
 
   user_data = file("jenkins.sh")
 
@@ -91,7 +91,7 @@ resource "aws_instance" "nexus" {
 
 resource "aws_instance" "sonarqube" {
   ami           = data.aws_ami.ami_info.id
-  instance_type =  var.sonarqube_instance_type
+  instance_type = "m7i-flex.large"
 
   subnet_id              = local.public_subnet_id
   vpc_security_group_ids = [aws_security_group.devops_tools.id]
@@ -167,7 +167,7 @@ module "records" {
 
 
 resource "aws_ebs_volume" "jenkins_home" {
-  availability_zone = data.aws_subnet.jenkins_subnet.availability_zone
+  availability_zone =  data.aws_subnet.public.availability_zone
 
   size = 20
   type = "gp3"

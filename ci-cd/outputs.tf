@@ -19,7 +19,7 @@ output "tools_security_group_id" {
 }
 
 output "jenkins_key_name" {
-  value = aws_key_pair.jenkins_key.key_name
+  value = data.aws_key_pair.tools.key_name
 }
 
 output "jenkins_master_instance_id" {

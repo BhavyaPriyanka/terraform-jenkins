@@ -1,6 +1,12 @@
 # Local .terraform directories
 .terraform/
 
+# AWS SSH Private Keys
+*.pem
+
+# Specific key
+localhelp-dev-tools-key.pem
+
 # .tfstate files
 *.tfstate
 *.tfstate.*
