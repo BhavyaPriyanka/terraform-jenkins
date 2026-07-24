@@ -29,6 +29,26 @@ yum install -y \
     which \
     tree \
     vim
+
+    echo "========== Installing Trivy =========="
+
+cat <<EOF >/etc/yum.repos.d/trivy.repo
+[trivy]
+name=Trivy repository
+baseurl=https://aquasecurity.github.io/trivy-repo/rpm/releases/\$basearch/
+gpgcheck=1
+enabled=1
+gpgkey=https://aquasecurity.github.io/trivy-repo/rpm/public.key
+EOF
+
+yum install -y trivy
+
+echo "========== Verifying Trivy =========="
+trivy --version
+
+echo "========== Downloading Trivy Database =========="
+
+trivy image alpine:latest || true
 echo "========== Preparing Jenkins temp directory =========="
 
 mkdir -p /var/lib/jenkins/tmp
