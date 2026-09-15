@@ -118,34 +118,34 @@ resource "aws_instance" "sonarqube" {
   )
 }
 
-resource "aws_instance" "zap" {
+# resource "aws_instance" "zap" {
 
-  ami           = data.aws_ami.ami_info.id
-  instance_type = "t3.large"
+#   ami           = data.aws_ami.ami_info.id
+#   instance_type = "t3.large"
 
-  subnet_id              = local.public_subnet_id
-  vpc_security_group_ids = [aws_security_group.devops_tools.id]
+#   subnet_id              = local.public_subnet_id
+#   vpc_security_group_ids = [aws_security_group.devops_tools.id]
 
-  key_name = data.aws_key_pair.tools.key_name
+#   key_name = data.aws_key_pair.tools.key_name
 
-  associate_public_ip_address = true
+#   associate_public_ip_address = true
 
-  user_data = file("install-zap.sh")
+#   user_data = file("install-zap.sh")
 
-  root_block_device {
-      volume_size = 30
-      volume_type = "gp3"
-      delete_on_termination = true
-  }
+#   root_block_device {
+#       volume_size = 30
+#       volume_type = "gp3"
+#       delete_on_termination = true
+#   }
 
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "${local.resource_name}-zap"
-    }
-  )
+#   tags = merge(
+#     local.common_tags,
+#     {
+#       Name = "${local.resource_name}-zap"
+#     }
+#   )
 
-}
+# }
 
 module "records" {
   source  = "terraform-aws-modules/route53/aws//modules/records"
@@ -189,16 +189,17 @@ module "records" {
         aws_instance.sonarqube.public_ip
       ]
       allow_overwrite = true
-    },
-    {
-      name = "zap"
-      type = "A"
-      ttl = 1
-      records = [
-          aws_instance.zap.public_ip
-      ]
-      allow_overwrite = true
-}
+    }
+    # ,
+#     {
+#       name = "zap"
+#       type = "A"
+#       ttl = 1
+#       records = [
+#           aws_instance.zap.public_ip
+#       ]
+#       allow_overwrite = true
+# }
   ]
 }
 
@@ -311,16 +312,16 @@ resource "aws_security_group" "devops_tools" {
      cidr_blocks = var.allowed_cidrs
   }
 
-  ingress {
-  description = "OWASP ZAP"
+#   ingress {
+#   description = "OWASP ZAP"
 
-  from_port = 8080
-  to_port   = 8080
+#   from_port = 8080
+#   to_port   = 8080
 
-  protocol = "tcp"
+#   protocol = "tcp"
 
-  cidr_blocks = var.allowed_cidrs
-}
+#   cidr_blocks = var.allowed_cidrs
+# }
 
    egress {
 
