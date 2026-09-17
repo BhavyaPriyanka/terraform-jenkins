@@ -59,64 +59,64 @@ module "jenkins_agent" {
   )
 }
 
-resource "aws_instance" "nexus" {
-  ami           = data.aws_ami.ami_info.id
-  instance_type = var.nexus_instance_type
-  vpc_security_group_ids = [aws_security_group.devops_tools.id]
-  subnet_id = local.public_subnet_id
-  key_name               = data.aws_key_pair.tools.key_name
+# resource "aws_instance" "nexus" {
+#   ami           = data.aws_ami.ami_info.id
+#   instance_type = var.nexus_instance_type
+#   vpc_security_group_ids = [aws_security_group.devops_tools.id]
+#   subnet_id = local.public_subnet_id
+#   key_name               = data.aws_key_pair.tools.key_name
 
-  associate_public_ip_address = true
-
-
-  user_data = file("install-nexus.sh")
-
-    root_block_device {
-    volume_size = 30
-    volume_type = "gp3"
-      delete_on_termination = true
-  }
+#   associate_public_ip_address = true
 
 
-  tags = merge(
+#   user_data = file("install-nexus.sh")
 
-    local.common_tags,
+#     root_block_device {
+#     volume_size = 30
+#     volume_type = "gp3"
+#       delete_on_termination = true
+#   }
 
-    {
-      Name = "${local.resource_name}-nexus"
-    }
 
-  )
-}
+#   tags = merge(
 
-resource "aws_instance" "sonarqube" {
-  ami           = data.aws_ami.ami_info.id
-  instance_type = "m7i-flex.large"
+#     local.common_tags,
 
-  subnet_id              = local.public_subnet_id
-  vpc_security_group_ids = [aws_security_group.devops_tools.id]
-  key_name = data.aws_key_pair.tools.key_name
+#     {
+#       Name = "${local.resource_name}-nexus"
+#     }
 
-  associate_public_ip_address = true
+#   )
+# }
 
-  user_data = file("install-sonarqube.sh")
+# resource "aws_instance" "sonarqube" {
+#   ami           = data.aws_ami.ami_info.id
+#   instance_type = "m7i-flex.large"
 
-  root_block_device {
-    volume_size           = 40
-    volume_type           = "gp3"
-    delete_on_termination = true
-  }
+#   subnet_id              = local.public_subnet_id
+#   vpc_security_group_ids = [aws_security_group.devops_tools.id]
+#   key_name = data.aws_key_pair.tools.key_name
 
-  tags = merge(
+#   associate_public_ip_address = true
 
-    local.common_tags,
+#   user_data = file("install-sonarqube.sh")
 
-    {
-      Name = "${local.resource_name}-sonarqube"
-    }
+#   root_block_device {
+#     volume_size           = 40
+#     volume_type           = "gp3"
+#     delete_on_termination = true
+#   }
 
-  )
-}
+#   tags = merge(
+
+#     local.common_tags,
+
+#     {
+#       Name = "${local.resource_name}-sonarqube"
+#     }
+
+#   )
+# }
 
 # resource "aws_instance" "zap" {
 
@@ -171,25 +171,27 @@ module "records" {
         module.jenkins_agent.private_ip
       ]
       allow_overwrite = true
-    },
-    {
-      name    = "nexus"
-      type    = "A"
-      ttl     = 1
-      records = [
-        aws_instance.nexus.public_ip
-      ]
-      allow_overwrite = true
-    },
-    {
-      name    = "sonar"
-      type    = "A"
-      ttl     = 1
-      records = [
-        aws_instance.sonarqube.public_ip
-      ]
-      allow_overwrite = true
     }
+    # ,
+    # {
+    #   name    = "nexus"
+    #   type    = "A"
+    #   ttl     = 1
+    #   records = [
+    #     aws_instance.nexus.public_ip
+    #   ]
+    #   allow_overwrite = true
+    # }
+    # ,
+    # {
+    #   name    = "sonar"
+    #   type    = "A"
+    #   ttl     = 1
+    #   records = [
+    #     aws_instance.sonarqube.public_ip
+    #   ]
+    #   allow_overwrite = true
+    # }
     # ,
 #     {
 #       name = "zap"
@@ -323,15 +325,15 @@ resource "aws_security_group" "devops_tools" {
 #   cidr_blocks = var.allowed_cidrs
 # }
 
-   egress {
+  #  egress {
 
-    from_port = 0
+  #   from_port = 0
 
-    to_port = 0
+  #   to_port = 0
 
-    protocol = "-1"
+  #   protocol = "-1"
 
-    cidr_blocks = var.egress_cidrs
+  #   cidr_blocks = var.egress_cidrs
 
   }
 
