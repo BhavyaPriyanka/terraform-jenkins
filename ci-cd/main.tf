@@ -9,13 +9,15 @@ module "jenkins_master" {
   vpc_security_group_ids = [aws_security_group.devops_tools.id]
   key_name               = data.aws_key_pair.tools.key_name
 
-  user_data = file("jenkins.sh")
+  user_data = templatefile("${path.module}/jenkins.sh", {
+    agent_private_ip = module.jenkins_agent.private_ip
+  })
 
   root_block_device = {
-  size                  = 30
-  type                  = "gp3"
-  delete_on_termination = true
-}
+    size                  = 30
+    type                  = "gp3"
+    delete_on_termination = true
+  }
 
   tags = merge(
     local.common_tags,
@@ -27,26 +29,26 @@ module "jenkins_master" {
 
 
 module "jenkins_agent" {
-  source  = "terraform-aws-modules/ec2-instance/aws"
+  source = "terraform-aws-modules/ec2-instance/aws"
 
   name = "jenkins-agent"
 
   instance_type          = var.jenkins_agent_instance_type
   vpc_security_group_ids = [aws_security_group.devops_tools.id]
- 
+
   subnet_id = local.public_subnet_id
-  ami = data.aws_ami.ami_info.id
-  key_name               = data.aws_key_pair.tools.key_name
+  ami       = data.aws_ami.ami_info.id
+  key_name  = data.aws_key_pair.tools.key_name
 
   iam_instance_profile = aws_iam_instance_profile.jenkins_agent.name
 
   user_data = file("jenkins-agent.sh")
 
-   root_block_device = {
-  size                  = 30
-  type                  = "gp3"
-  delete_on_termination = true
-}
+  root_block_device = {
+    size                  = 30
+    type                  = "gp3"
+    delete_on_termination = true
+  }
 
   tags = merge(
 
@@ -155,18 +157,18 @@ module "records" {
 
   records = [
     {
-      name    = "jenkins-master"
-      type    = "A"
-      ttl     = 1
+      name = "jenkins-master"
+      type = "A"
+      ttl  = 1
       records = [
         module.jenkins_master.public_ip
       ]
       allow_overwrite = true
     },
     {
-      name    = "jenkins-agent"
-      type    = "A"
-      ttl     = 1
+      name = "jenkins-agent"
+      type = "A"
+      ttl  = 1
       records = [
         module.jenkins_agent.private_ip
       ]
@@ -193,27 +195,27 @@ module "records" {
     #   allow_overwrite = true
     # }
     # ,
-#     {
-#       name = "zap"
-#       type = "A"
-#       ttl = 1
-#       records = [
-#           aws_instance.zap.public_ip
-#       ]
-#       allow_overwrite = true
-# }
+    #     {
+    #       name = "zap"
+    #       type = "A"
+    #       ttl = 1
+    #       records = [
+    #           aws_instance.zap.public_ip
+    #       ]
+    #       allow_overwrite = true
+    # }
   ]
 }
 
 
 
 resource "aws_ebs_volume" "jenkins_home" {
-  availability_zone =  data.aws_subnet.public.availability_zone
+  availability_zone = data.aws_subnet.public.availability_zone
 
   size = 20
   type = "gp3"
 
-    tags = merge(
+  tags = merge(
     local.common_tags,
     {
       Name = "${local.resource_name}-jenkins-home"
@@ -254,7 +256,7 @@ resource "aws_iam_role" "jenkins_agent" {
 
 resource "aws_iam_role_policy_attachment" "admin" {
 
-  role       = aws_iam_role.jenkins_agent.name
+  role = aws_iam_role.jenkins_agent.name
 
   policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
 
@@ -277,9 +279,9 @@ resource "aws_security_group" "devops_tools" {
   ingress {
     description = "SSH"
 
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
+    from_port = 22
+    to_port   = 22
+    protocol  = "tcp"
 
     cidr_blocks = var.allowed_cidrs
   }
@@ -287,9 +289,9 @@ resource "aws_security_group" "devops_tools" {
   ingress {
     description = "Jenkins"
 
-    from_port   = 8080
-    to_port     = 8080
-    protocol    = "tcp"
+    from_port = 8080
+    to_port   = 8080
+    protocol  = "tcp"
 
     cidr_blocks = var.allowed_cidrs
   }
@@ -297,22 +299,23 @@ resource "aws_security_group" "devops_tools" {
   ingress {
     description = "Nexus"
 
-    from_port   = 8081
-    to_port     = 8081
-    protocol    = "tcp"
+    from_port = 8081
+    to_port   = 8081
+    protocol  = "tcp"
 
-     cidr_blocks = var.allowed_cidrs
+    cidr_blocks = var.allowed_cidrs
   }
 
   ingress {
     description = "SonarQube"
 
-    from_port   = 9000
-    to_port     = 9000
-    protocol    = "tcp"
+    from_port = 9000
+    to_port   = 9000
+    protocol  = "tcp"
 
-     cidr_blocks = var.allowed_cidrs
+    cidr_blocks = var.allowed_cidrs
   }
+}
 
 #   ingress {
 #   description = "OWASP ZAP"
@@ -325,22 +328,21 @@ resource "aws_security_group" "devops_tools" {
 #   cidr_blocks = var.allowed_cidrs
 # }
 
-  #  egress {
+#  egress {
 
-  #   from_port = 0
+#   from_port = 0
 
-  #   to_port = 0
+#   to_port = 0
 
-  #   protocol = "-1"
+#   protocol = "-1"
 
-  #   cidr_blocks = var.egress_cidrs
+#   cidr_blocks = var.egress_cidrs
 
-  }
+#   }
 
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "${local.resource_name}-tools-sg"
-    }
-  )
-}
+#   tags = merge(
+#     local.common_tags,
+#     {
+#       Name = "${local.resource_name}-tools-sg"
+#     }
+#   )

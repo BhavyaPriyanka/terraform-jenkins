@@ -110,6 +110,16 @@ echo "UUID=$UUID /var/lib/jenkins xfs defaults,nofail 0 2" >> /etc/fstab
 
 mount -a
 
+echo "========== Preparing SSH known_hosts =========="
+
+mkdir -p /var/lib/jenkins/.ssh
+
+ssh-keyscan -H "${agent_private_ip}" \
+  >> /var/lib/jenkins/.ssh/known_hosts
+
+chown -R jenkins:jenkins /var/lib/jenkins/.ssh
+chmod 700 /var/lib/jenkins/.ssh
+chmod 644 /var/lib/jenkins/.ssh/known_hosts
 
 echo "========== Starting Jenkins =========="
 
