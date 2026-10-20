@@ -91,34 +91,34 @@ module "jenkins_agent" {
 #   )
 # }
 
-# resource "aws_instance" "sonarqube" {
-#   ami           = data.aws_ami.ami_info.id
-#   instance_type = "m7i-flex.large"
+resource "aws_instance" "sonarqube" {
+  ami           = data.aws_ami.ami_info.id
+  instance_type = "t3.medium"
 
-#   subnet_id              = local.public_subnet_id
-#   vpc_security_group_ids = [aws_security_group.devops_tools.id]
-#   key_name = data.aws_key_pair.tools.key_name
+  subnet_id              = local.public_subnet_id
+  vpc_security_group_ids = [aws_security_group.devops_tools.id]
+  key_name = data.aws_key_pair.tools.key_name
 
-#   associate_public_ip_address = true
+  associate_public_ip_address = true
 
-#   user_data = file("install-sonarqube.sh")
+  user_data = file("install-sonarqube.sh")
 
-#   root_block_device {
-#     volume_size           = 40
-#     volume_type           = "gp3"
-#     delete_on_termination = true
-#   }
+  root_block_device {
+    volume_size           = 40
+    volume_type           = "gp3"
+    delete_on_termination = true
+  }
 
-#   tags = merge(
+  tags = merge(
 
-#     local.common_tags,
+    local.common_tags,
 
-#     {
-#       Name = "${local.resource_name}-sonarqube"
-#     }
+    {
+      Name = "${local.resource_name}-sonarqube"
+    }
 
-#   )
-# }
+  )
+}
 
 # resource "aws_instance" "zap" {
 
@@ -184,16 +184,16 @@ module "records" {
     #   ]
     #   allow_overwrite = true
     # }
-    # ,
-    # {
-    #   name    = "sonar"
-    #   type    = "A"
-    #   ttl     = 1
-    #   records = [
-    #     aws_instance.sonarqube.public_ip
-    #   ]
-    #   allow_overwrite = true
-    # }
+    ,
+    {
+      name    = "sonar"
+      type    = "A"
+      ttl     = 1
+      records = [
+        aws_instance.sonarqube.public_ip
+      ]
+      allow_overwrite = true
+    }
     # ,
     #     {
     #       name = "zap"

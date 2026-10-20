@@ -1,0 +1,38 @@
+
+jenkins:
+  systemMessage: "Localhelp CI - managed by Configuration as Code"
+
+  numExecutors: 0
+
+  crumbIssuer:
+    standard:
+      excludeClientIPFromCrumb: false
+
+  globalNodeProperties:
+    - envVars:
+        env:
+          - key: AWS_DEFAULT_REGION
+            value: us-east-1
+
+unclassified:
+  globalLibraries:
+    libraries:
+      - name: "localhelp-jenkins-shared-library"
+        defaultVersion: "v1.9.13"
+        implicit: false
+        allowVersionOverride: true
+        includeInChangesets: true
+        retriever:
+          modernSCM:
+            scm:
+              git:
+                remote: "https://github.com/BhavyaPriyanka/localhelp-jenkins-shared-library.git"
+                traits:
+                  - "gitBranchDiscovery"
+
+  sonarGlobalConfiguration:
+    buildWrapperEnabled: false
+    installations:
+      - name: "SonarQube"
+        serverUrl: "${SONAR_HOST_URL}"
+        credentialsId: "sonarqube-token"
