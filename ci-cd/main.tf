@@ -97,7 +97,7 @@ resource "aws_instance" "sonarqube" {
 
   subnet_id              = local.public_subnet_id
   vpc_security_group_ids = [aws_security_group.devops_tools.id]
-  key_name = data.aws_key_pair.tools.key_name
+  key_name               = data.aws_key_pair.tools.key_name
 
   associate_public_ip_address = true
 
@@ -186,9 +186,9 @@ module "records" {
     # }
     ,
     {
-      name    = "sonar"
-      type    = "A"
-      ttl     = 1
+      name = "sonar"
+      type = "A"
+      ttl  = 1
       records = [
         aws_instance.sonarqube.public_ip
       ]
@@ -316,6 +316,8 @@ resource "aws_security_group" "devops_tools" {
     cidr_blocks = var.allowed_cidrs
   }
 }
+
+
 
 #   ingress {
 #   description = "OWASP ZAP"

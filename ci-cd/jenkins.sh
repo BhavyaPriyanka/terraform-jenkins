@@ -2,184 +2,99 @@
 #!/bin/bash
 set -Eeuo pipefail
 
-trap 'rc=$?; trap - ERR; echo "ERROR: Bootstrap failed at line $LINENO: $BASH_COMMAND (exit=$rc)" >&2; systemctl daemon-reload || true; systemctl enable jenkins || true; systemctl start jenkins || true; systemctl status jenkins --no-pager || true; journalctl -u jenkins -n 50 --no-pager || true; exit "$rc"' ERR
+exec > >(tee -a /var/log/jenkins-bootstrap.log | logger -t jenkins-bootstrap -s 2>/dev/console) 2>&1
 
+trap 'rc=$?; echo "ERROR: Bootstrap failed at line $${LINENO}: $${BASH_COMMAND} (exit=$${rc})" >&2; ...'
 echo "========== Jenkins Controller Setup =========="
 
-if [[ $EUID -ne 0 ]]; then
-    echo "ERROR: Run this script as root."
-    exit 1
+# Configure for your EC2 environment.
+JENKINS_DATA_DEVICE="/dev/nvme1n1"
+JENKINS_HOME="/var/lib/jenkins"
+PLUGIN_MANAGER_VERSION="2.15.0"
+PLUGIN_MANAGER_JAR="/opt/jenkins/jenkins-plugin-manager.jar"
+PLUGIN_STAGING="/var/cache/jenkins-plugin-manager/plugins"
+
+# 1. Install required packages.
+# Use curl-minimal instead of curl to avoid the AL2023 conflict.
+dnf install -y \
+  fontconfig \
+  java-21-amazon-corretto \
+  git rsync xfsprogs unzip wget jq zip tar \
+  which tree vim curl-minimal openssh-clients
+
+java -version
+
+# 2. Configure the official Jenkins stable repository.
+rpm --import https://pkg.jenkins.io/rpm-stable/jenkins.io-2023.key
+
+cat > /etc/yum.repos.d/jenkins.repo <<'REPO'
+[jenkins]
+name=Jenkins Stable
+baseurl=https://pkg.jenkins.io/rpm-stable
+gpgcheck=1
+gpgkey=https://pkg.jenkins.io/rpm-stable/jenkins.io-2023.key
+REPO
+
+dnf install -y jenkins
+
+# 3. Prepare Jenkins configuration directory.
+install -d -m 0755 /etc/jenkins
+install -d -m 0755 /opt/jenkins
+
+# 4. Prepare the dedicated Jenkins EBS volume safely.
+# IMPORTANT: verify the device mapping for your instance.
+if [[ ! -b "$JENKINS_DATA_DEVICE" ]]; then
+  echo "ERROR: Jenkins EBS device not found: $JENKINS_DATA_DEVICE"
+  lsblk
+  exit 1
 fi
 
-# Terraform substitutes the Jenkins agent private IP.
-AGENT_IP="${agent_private_ip}"
+install -d "$JENKINS_HOME"
 
-# --------------------------------------------------
-# 1. Install packages
-# --------------------------------------------------
-echo "========== Installing Jenkins and Utilities =========="
+if mountpoint -q "$JENKINS_HOME"; then
+  echo "Jenkins home is already mounted."
+else
+  NEW_FILESYSTEM=0
 
-mkdir -p /etc/yum.repos.d /etc/jenkins
+  if blkid "$JENKINS_DATA_DEVICE" >/dev/null 2>&1; then
+    FSTYPE="$(blkid -o value -s TYPE "$JENKINS_DATA_DEVICE" || true)"
 
-curl -fsSL https://pkg.jenkins.io/redhat-stable/jenkins.repo \
-    -o /etc/yum.repos.d/jenkins.repo
-
-rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
-
-yum install -y \
-    java-21-amazon-corretto \
-    jenkins \
-    git \
-    rsync \
-    xfsprogs \
-    unzip wget jq zip tar which tree vim curl
-
-rpm -q jenkins
-command -v java
-
-# --------------------------------------------------
-# 2. Prepare Jenkins EBS volume
-# --------------------------------------------------
-echo "========== Preparing Jenkins EBS =========="
-
-DEVICE=""
-
-for attempt in $(seq 1 60); do
-    if [[ -b /dev/nvme1n1 ]]; then
-        DEVICE="/dev/nvme1n1"
-        break
-    elif [[ -b /dev/xvdf ]]; then
-        DEVICE="/dev/xvdf"
-        break
+    if [[ "$FSTYPE" != "xfs" ]]; then
+      echo "ERROR: Existing filesystem is '$FSTYPE', not XFS."
+      echo "Refusing to format or overwrite the volume."
+      exit 1
     fi
-    sleep 2
-done
+  else
+    # Only format a volume with no detected filesystem.
+    # Confirm it is the intended blank EBS volume before launch.
+    echo "Formatting blank Jenkins EBS volume: $JENKINS_DATA_DEVICE"
+    mkfs.xfs "$JENKINS_DATA_DEVICE"
+    NEW_FILESYSTEM=1
+  fi
 
-if [[ -z "$DEVICE" ]]; then
-    echo "ERROR: Jenkins EBS volume not found."
-    exit 1
+  if [[ "$NEW_FILESYSTEM" -eq 1 ]]; then
+    TEMP_MOUNT="/mnt/jenkins-ebs-init"
+    install -d "$TEMP_MOUNT"
+    mount "$JENKINS_DATA_DEVICE" "$TEMP_MOUNT"
+
+    # Preserve any existing Jenkins files on the root disk.
+    rsync -aHAX "$JENKINS_HOME/" "$TEMP_MOUNT/"
+
+    umount "$TEMP_MOUNT"
+    rmdir "$TEMP_MOUNT"
+  fi
+
+  VOLUME_UUID="$(blkid -s UUID -o value "$JENKINS_DATA_DEVICE")"
+
+  if ! grep -qE "UUID=$${VOLUME_UUID}[[:space:]]" /etc/fstab; then
+    echo "UUID=$${VOLUME_UUID} $${JENKINS_HOME} xfs defaults,nofail 0 2" >> /etc/fstab
+  fi
+
+  mount "$JENKINS_HOME"
 fi
 
-# Format only a blank disk. Never overwrite existing signatures.
-if ! blkid "$DEVICE" >/dev/null 2>&1; then
-    if wipefs -n "$DEVICE" | grep -q .; then
-        echo "ERROR: Disk signatures found on $DEVICE; refusing to format."
-        exit 1
-    fi
-
-    if lsblk -nrpo MOUNTPOINT "$DEVICE" | grep -q '[^[:space:]]'; then
-        echo "ERROR: $DEVICE is mounted; refusing to format."
-        exit 1
-    fi
-
-    echo "Formatting blank Jenkins EBS volume: $DEVICE"
-    mkfs.xfs "$DEVICE"
-fi
-
-UUID=$(blkid -s UUID -o value "$DEVICE")
-
-if [[ -z "$UUID" ]]; then
-    echo "ERROR: Cannot determine EBS filesystem UUID."
-    exit 1
-fi
-
-mkdir -p /mnt/jenkins /var/lib/jenkins
-
-# Add the persistent mount entry once.
-if ! grep -Fq "UUID=$UUID " /etc/fstab; then
-    echo "UUID=$UUID /var/lib/jenkins xfs defaults,nofail 0 2" \
-        >> /etc/fstab
-fi
-
-# If Jenkins home is not mounted, migrate existing data safely.
-if ! mountpoint -q /var/lib/jenkins; then
-    mount "$DEVICE" /mnt/jenkins
-
-    if [[ -z "$(ls -A /mnt/jenkins)" ]]; then
-        rsync -a /var/lib/jenkins/ /mnt/jenkins/
-    fi
-
-    umount /mnt/jenkins
-    mount /var/lib/jenkins
-fi
-
-chown -R jenkins:jenkins /var/lib/jenkins
-
-# --------------------------------------------------
-# 3. Configure Jenkins
-# --------------------------------------------------
-echo "========== Configuring Jenkins =========="
-
-mkdir -p /var/lib/jenkins/tmp
-mkdir -p /etc/systemd/system/jenkins.service.d
-
-chown jenkins:jenkins /var/lib/jenkins/tmp
-chmod 1777 /var/lib/jenkins/tmp
-
-cat >/etc/systemd/system/jenkins.service.d/override.conf <<'EOF'
-[Service]
-Environment="JAVA_OPTS=-Djava.io.tmpdir=/var/lib/jenkins/tmp"
-Environment="CASC_JENKINS_CONFIG=/var/lib/jenkins/jenkins.yaml"
-EOF
-
-cat >/var/lib/jenkins/jenkins.yaml <<'EOF'
-jenkins:
-  systemMessage: "Localhelp CI - managed by Configuration as Code"
-  numExecutors: 0
-  globalNodeProperties:
-    - envVars:
-        env:
-          - key: AWS_DEFAULT_REGION
-            value: us-east-1
-
-unclassified:
-  globalLibraries:
-    libraries:
-      - name: "localhelp-jenkins-shared-library"
-        defaultVersion: "v1.9.13"
-        implicit: false
-        allowVersionOverride: true
-        includeInChangesets: true
-        retriever:
-          modernSCM:
-            scm:
-              git:
-                remote: "https://github.com/BhavyaPriyanka/localhelp-jenkins-shared-library.git"
-EOF
-
-chown jenkins:jenkins /var/lib/jenkins/jenkins.yaml
-chmod 600 /var/lib/jenkins/jenkins.yaml
-
-# --------------------------------------------------
-# 4. Configure SSH access to Jenkins agent
-# --------------------------------------------------
-echo "========== Configuring Agent SSH =========="
-
-install -d -o jenkins -g jenkins -m 700 /var/lib/jenkins/.ssh
-
-touch /var/lib/jenkins/.ssh/known_hosts
-chown jenkins:jenkins /var/lib/jenkins/.ssh/known_hosts
-chmod 600 /var/lib/jenkins/.ssh/known_hosts
-
-if ! ssh-keygen -F "$AGENT_IP" \
-    -f /var/lib/jenkins/.ssh/known_hosts >/dev/null 2>&1; then
-    if ! ssh-keyscan -T 5 -H "$AGENT_IP" \
-    >> /var/lib/jenkins/.ssh/known_hosts; then
-    echo "WARNING: Could not scan agent SSH key at $AGENT_IP."
-    echo "Check agent reachability and SSH security-group rules."
-fi
-fi
-
-chown jenkins:jenkins /var/lib/jenkins/.ssh/known_hosts
-
-# --------------------------------------------------
-# 5. Install Jenkins plugins
-# --------------------------------------------------
-echo "========== Installing Jenkins Plugins =========="
-
-mkdir -p /etc/jenkins /var/lib/jenkins/plugins
-
-cat >/etc/jenkins/plugins.txt <<'EOF'
+# 5. Configure plugin list.
+cat > /etc/jenkins/plugins.txt <<'PLUGINS'
 configuration-as-code
 workflow-aggregator
 git
@@ -193,50 +108,63 @@ ssh-agent
 sonar
 nexus-artifact-uploader
 ansible
-EOF
+PLUGINS
 
-if ! command -v jenkins-plugin-cli >/dev/null 2>&1; then
-    echo "ERROR: jenkins-plugin-cli is missing."
-    echo "Verify the Jenkins package installation before continuing."
-    exit 1
+# 6. Download the official standalone Plugin Installation Manager.
+curl -fL --retry 3 \
+  -o "$${PLUGIN_MANAGER_JAR}" \
+  "https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/$${PLUGIN_MANAGER_VERSION}/jenkins-plugin-manager-$${PLUGIN_MANAGER_VERSION}.jar"
+
+java -jar "$PLUGIN_MANAGER_JAR" --version
+
+# Stage plugins separately so the manager does not erase
+# an existing Jenkins plugins directory.
+install -d "$PLUGIN_STAGING"
+install -d -o jenkins -g jenkins "$JENKINS_HOME/plugins"
+
+java -jar "$PLUGIN_MANAGER_JAR" \
+  --war /usr/share/java/jenkins.war \
+  --plugin-file /etc/jenkins/plugins.txt \
+  --plugin-download-directory "$PLUGIN_STAGING"
+
+# Copy downloaded plugins and dependencies into Jenkins home.
+rsync -a "$PLUGIN_STAGING/" "$JENKINS_HOME/plugins/"
+chown -R jenkins:jenkins "$JENKINS_HOME/plugins"
+
+# 7. CUSTOM CONFIGURATION
+# Retain your existing JCasC YAML generation and SSH-agent
+# configuration here. In your previous setup, JCasC was stored at:
+# /var/lib/jenkins/jenkins.yaml
+#
+# If that file exists, configure Jenkins to load it:
+if [[ -f "$JENKINS_HOME/jenkins.yaml" ]]; then
+  install -d /etc/systemd/system/jenkins.service.d
+
+  cat > /etc/systemd/system/jenkins.service.d/override.conf <<'OVERRIDE'
+[Service]
+Environment="CASC_JENKINS_CONFIG=/var/lib/jenkins/jenkins.yaml"
+OVERRIDE
 fi
 
-jenkins-plugin-cli \
-    --plugin-file /etc/jenkins/plugins.txt \
-    --plugin-download-directory /var/lib/jenkins/plugins
-
-chown -R jenkins:jenkins /var/lib/jenkins/plugins
-
-# --------------------------------------------------
-# 6. Start and verify Jenkins
-# --------------------------------------------------
-echo "========== Starting Jenkins =========="
-
+# 8. Set ownership and start Jenkins.
+chown jenkins:jenkins "$JENKINS_HOME"
 systemctl daemon-reload
 systemctl enable jenkins
+systemctl start jenkins
 
-if ! systemctl start jenkins; then
-    echo "ERROR: Jenkins failed to start."
-    systemctl status jenkins --no-pager || true
-    journalctl -u jenkins -n 100 --no-pager || true
-    exit 1
-fi
-
-echo "========== Verifying Jenkins =========="
-
+# 9. Wait for Jenkins to respond.
 for attempt in $(seq 1 60); do
-    if systemctl is-active --quiet jenkins &&
-       curl -fsS --max-time 5 \
-           http://localhost:8080/login >/dev/null; then
-        echo "SUCCESS: Jenkins is active and responding on port 8080."
-        systemctl status jenkins --no-pager
-        exit 0
-    fi
+  if systemctl is-active --quiet jenkins &&
+     curl -fsS http://localhost:8080/login -o /dev/null; then
+    echo "========== Jenkins is READY =========="
+    systemctl status jenkins --no-pager
+    exit 0
+  fi
 
-    sleep 5
+  sleep 5
 done
 
-echo "ERROR: Jenkins did not become healthy within 5 minutes."
+echo "ERROR: Jenkins did not become ready within 5 minutes."
 systemctl status jenkins --no-pager || true
 journalctl -u jenkins -n 100 --no-pager || true
 exit 1

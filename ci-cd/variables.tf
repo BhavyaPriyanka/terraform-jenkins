@@ -1,3 +1,4 @@
+
 variable "aws_region" {
   description = "AWS Region"
   type        = string
@@ -10,7 +11,7 @@ variable "project_name" {
 }
 
 variable "environment" {
-  description = "Environment"
+  description = "Project Environment"
   type        = string
 }
 
@@ -44,43 +45,31 @@ variable "sonarqube_instance_type" {
 }
 
 variable "root_volume_size" {
-  description = "Root Volume Size"
+  description = "Root Volume Size in GiB"
   type        = number
   default     = 40
 }
 
 variable "allowed_cidrs" {
-
   description = "Allowed Networks"
-
-  type = list(string)
-
-  default = [
-    "0.0.0.0/0"
-  ]
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
 }
 
 variable "egress_cidrs" {
-  type = list(string)
-
-  default = [
-    "0.0.0.0/0"
-  ]
+  description = "Allowed Outbound Networks"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
 }
 
 variable "common_tags" {
-
-  description = "Common Tags"
-
-  type = map(string)
+  description = "Common Resource Tags"
+  type        = map(string)
 
   default = {
-
     Terraform = "true"
     ManagedBy = "Terraform"
-
   }
-
 }
 
 variable "key_pair_name" {
