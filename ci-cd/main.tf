@@ -315,7 +315,24 @@ resource "aws_security_group" "devops_tools" {
 
     cidr_blocks = var.allowed_cidrs
   }
-}
+
+    egress {
+    description = "Allow HTTPS outbound for package downloads"
+
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+
+     tags = merge(
+    local.common_tags,
+    {
+      Name = "${local.resource_name}-tools-sg"
+    })
+    }
+
 
 
 
