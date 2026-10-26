@@ -1,258 +1,374 @@
-#!/bin/bash
+
+#!/usr/bin/env bash
 set -Eeuo pipefail
+
+# ============================================================
+# Localhelp SonarQube Community Build
+# Amazon Linux 2023 | Java 21 | PostgreSQL 16 | Nginx
+# ============================================================
+
+if [[ "${EUID}" -ne 0 ]]; then
+    echo "ERROR: Run this script using sudo."
+    exit 1
+fi
+
 umask 077
-
 exec > >(tee -a /var/log/sonarqube-install.log) 2>&1
+trap 'rc=$?; echo "ERROR: Script failed at line ${LINENO}, exit code ${rc}."; exit "$rc"' ERR
 
-trap 'rc=$?; echo "ERROR: line ${LINENO}, exit code ${rc}"; exit "$rc"' ERR
-
-# ---------- Configuration ----------
-SONAR_VERSION="26.10.0.133078"
-SONAR_ZIP="sonarqube-${SONAR_VERSION}.zip"
-SONAR_URL="https://binaries.sonarsource.com/Distribution/sonarqube/${SONAR_ZIP}"
-
-SONAR_HOME="/opt/sonarqube"
+DOMAIN="sonar.localhelp.store"
+SONAR_VERSION="26.3.0.120487"
 SONAR_USER="sonar"
+SONAR_HOME="/opt/sonarqube"
+SONAR_DIR="/opt/sonarqube-${SONAR_VERSION}"
+SONAR_ZIP="/tmp/sonarqube-${SONAR_VERSION}.zip"
+SONAR_CONF="${SONAR_HOME}/conf/sonar.properties"
 
 DB_NAME="sonarqube"
-DB_USER="sonar"
-DB_PASSWORD_FILE="/root/.sonarqube-db-password"
-PGDATA="/var/lib/pgsql/data"
+DB_USER="sonarqube"
+DB_ENV="/etc/sonarqube/database.env"
+ROTATE_DB_PASSWORD="${ROTATE_DB_PASSWORD:-false}"
 
-# ---------- Preflight ----------
-if [[ $EUID -ne 0 ]]; then
-    echo "ERROR: Run this script as root."
-    exit 1
-fi
+echo "============================================================"
+echo "Starting SonarQube installation/configuration"
+echo "Domain: ${DOMAIN}"
+echo "Version: ${SONAR_VERSION}"
+echo "Log: /var/log/sonarqube-install.log"
+echo "============================================================"
 
-if [[ ! -f /etc/os-release ]] || ! grep -q 'Amazon Linux' /etc/os-release; then
-    echo "ERROR: This script expects Amazon Linux."
-    exit 1
-fi
-
-echo "=== 1. Installing required packages ==="
+# 1. Install packages.
+# Do not install the full curl package: AL2023 may use curl-minimal.
+echo "[1/10] Installing required packages..."
 
 dnf install -y \
-    java-21-amazon-corretto-headless \
-    curl unzip openssl \
-    postgresql15 postgresql15-server
+    java-21-amazon-corretto-devel \
+    unzip \
+    wget \
+    nginx \
+    shadow-utils \
+    procps-ng \
+    openssl \
+    postgresql16-server \
+    postgresql16
 
-echo "=== 2. Checking Java ==="
-
-command -v java
-java -version
+command -v curl >/dev/null || {
+    echo "ERROR: curl command is unavailable."
+    exit 1
+}
 
 JAVA_BIN="$(readlink -f "$(command -v java)")"
 JAVA_HOME="${JAVA_BIN%/bin/java}"
 
-# ---------- PostgreSQL ----------
-echo "=== 3. Initializing PostgreSQL ==="
+echo "Java: ${JAVA_BIN}"
+"${JAVA_BIN}" -version
 
-if [[ ! -s "${PGDATA}/PG_VERSION" ]]; then
-    install -d -o postgres -g postgres /var/lib/pgsql
-    runuser -u postgres -- /usr/bin/initdb -D "$PGDATA"
+# 2. Initialize and start PostgreSQL.
+echo "[2/10] Configuring PostgreSQL..."
+
+if [[ ! -s /var/lib/pgsql/data/PG_VERSION ]]; then
+    postgresql-setup --initdb
 fi
 
 systemctl enable --now postgresql
 
-echo "=== 4. Creating database credentials ==="
+for attempt in $(seq 1 30); do
+    if runuser -u postgres -- psql -tAc 'SELECT 1' >/dev/null 2>&1; then
+        break
+    fi
+    sleep 2
+done
 
-if [[ ! -s "$DB_PASSWORD_FILE" ]]; then
-    openssl rand -hex 32 > "$DB_PASSWORD_FILE"
+runuser -u postgres -- psql -tAc 'SELECT 1' >/dev/null
+
+# 3. Configure password authentication for localhost.
+echo "[3/10] Configuring PostgreSQL authentication..."
+
+PG_HBA="$(runuser -u postgres -- psql -tAc 'SHOW hba_file;')"
+PG_HBA="$(echo "${PG_HBA}" | xargs)"
+
+if [[ ! -f "${PG_HBA}" ]]; then
+    echo "ERROR: PostgreSQL authentication file not found: ${PG_HBA}"
+    exit 1
 fi
 
-chmod 600 "$DB_PASSWORD_FILE"
-DB_PASSWORD="$(cat "$DB_PASSWORD_FILE")"
+cp -a "${PG_HBA}" "${PG_HBA}.backup.$(date +%Y%m%d%H%M%S)"
 
-# Add explicit password authentication for local TCP connections.
-PG_HBA="${PGDATA}/pg_hba.conf"
+# Remove this script's previous managed block to make reruns safe.
+sed -i \
+    '/^# BEGIN LOCALHELP SONARQUBE AUTH$/,/^# END LOCALHELP SONARQUBE AUTH$/d' \
+    "${PG_HBA}"
 
-if ! grep -qE '^host[[:space:]]+sonarqube[[:space:]]+sonar[[:space:]]+127\.0\.0\.1/32' "$PG_HBA"; then
-    sed -i '1i host sonarqube sonar 127.0.0.1/32 scram-sha-256' "$PG_HBA"
+PG_HBA_TMP="$(mktemp)"
+{
+    echo "# BEGIN LOCALHELP SONARQUBE AUTH"
+    echo "host all all 127.0.0.1/32 scram-sha-256"
+    echo "host all all ::1/128 scram-sha-256"
+    echo "# END LOCALHELP SONARQUBE AUTH"
+    cat "${PG_HBA}"
+} > "${PG_HBA_TMP}"
+
+cat "${PG_HBA_TMP}" > "${PG_HBA}"
+rm -f "${PG_HBA_TMP}"
+
+# 4. Create/reuse a strong database password.
+echo "[4/10] Configuring the SonarQube database..."
+
+install -d -o root -g root -m 700 /etc/sonarqube
+
+DB_PASS=""
+
+if [[ -f "${DB_ENV}" && "${ROTATE_DB_PASSWORD}" != "true" ]]; then
+    # This file is root-owned and mode 600.
+    source "${DB_ENV}"
 fi
 
-if ! grep -qE '^host[[:space:]]+sonarqube[[:space:]]+sonar[[:space:]]+::1/128' "$PG_HBA"; then
-    sed -i '1i host sonarqube sonar ::1/128 scram-sha-256' "$PG_HBA"
+if [[ "${ROTATE_DB_PASSWORD}" == "true" ||
+      ! "${DB_PASS:-}" =~ ^[a-f0-9]{64}$ ]]; then
+    DB_PASS="$(openssl rand -hex 32)"
 fi
 
-systemctl reload postgresql
+# The password is hexadecimal, so it is safe in this SQL statement.
+printf "ALTER ROLE %s WITH LOGIN PASSWORD '%s';\n" \
+    "${DB_USER}" "${DB_PASS}" |
+    runuser -u postgres -- psql -v ON_ERROR_STOP=1
 
-# The generated password is hexadecimal, so it is safe in this SQL literal.
-if runuser -u postgres -- psql -tAc \
+# If the role did not exist, create it.
+# The ALTER above fails for a missing role, so check/create beforehand
+# using a separate role-existence check on subsequent runs.
+#
+# The role is created below when absent; the ALTER is repeated afterward.
+if ! runuser -u postgres -- psql -tAc \
     "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" | grep -q 1; then
-    runuser -u postgres -- psql -v ON_ERROR_STOP=1 \
-        -c "ALTER ROLE ${DB_USER} WITH LOGIN PASSWORD '${DB_PASSWORD}';"
-else
-    runuser -u postgres -- psql -v ON_ERROR_STOP=1 \
-        -c "CREATE ROLE ${DB_USER} LOGIN PASSWORD '${DB_PASSWORD}';"
+    printf "CREATE ROLE %s LOGIN PASSWORD '%s';\n" \
+        "${DB_USER}" "${DB_PASS}" |
+        runuser -u postgres -- psql -v ON_ERROR_STOP=1
 fi
 
-if runuser -u postgres -- psql -tAc \
+# Ensure the password is set, including on first creation.
+printf "ALTER ROLE %s WITH LOGIN PASSWORD '%s';\n" \
+    "${DB_USER}" "${DB_PASS}" |
+    runuser -u postgres -- psql -v ON_ERROR_STOP=1
+
+if ! runuser -u postgres -- psql -tAc \
     "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | grep -q 1; then
-    runuser -u postgres -- psql -v ON_ERROR_STOP=1 \
-        -c "ALTER DATABASE ${DB_NAME} OWNER TO ${DB_USER};"
-else
-    runuser -u postgres -- psql -v ON_ERROR_STOP=1 \
-        -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
+    runuser -u postgres -- createdb -O "${DB_USER}" "${DB_NAME}"
 fi
 
-echo "=== 5. Testing database authentication ==="
+runuser -u postgres -- psql -v ON_ERROR_STOP=1 \
+    -c "ALTER DATABASE ${DB_NAME} OWNER TO ${DB_USER};" \
+    -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};" \
+    -d "${DB_NAME}" \
+    -c "GRANT ALL ON SCHEMA public TO ${DB_USER};"
 
-PGPASSWORD="$DB_PASSWORD" psql \
+# Save the password securely for future reruns.
+printf 'DB_NAME=%s\nDB_USER=%s\nDB_PASS=%s\n' \
+    "${DB_NAME}" "${DB_USER}" "${DB_PASS}" > "${DB_ENV}"
+chown root:root "${DB_ENV}"
+chmod 600 "${DB_ENV}"
+
+systemctl restart postgresql
+
+# Verify password authentication before continuing.
+PGPASSWORD="${DB_PASS}" psql \
     -h 127.0.0.1 \
-    -U "$DB_USER" \
-    -d "$DB_NAME" \
+    -U "${DB_USER}" \
+    -d "${DB_NAME}" \
     -v ON_ERROR_STOP=1 \
-    -c 'SELECT current_user, current_database();'
+    -c 'SELECT 1;' >/dev/null
 
 unset PGPASSWORD
 
-# ---------- SonarQube download ----------
-echo "=== 6. Downloading SonarQube ==="
+echo "PostgreSQL authentication test passed."
 
-if [[ ! -x "${SONAR_HOME}/bin/linux-x86-64/sonar.sh" ]]; then
-    if [[ -e "$SONAR_HOME" ]]; then
-        echo "ERROR: ${SONAR_HOME} exists but is incomplete."
-        echo "Inspect it before removing or replacing anything."
-        exit 1
-    fi
+# 5. Configure kernel settings and the service account.
+echo "[5/10] Configuring system requirements..."
 
-    TMP_DIR="$(mktemp -d)"
-    trap 'rc=$?; rm -rf "${TMP_DIR:-}"; echo "ERROR: line ${LINENO}, exit code ${rc}"; exit "$rc"' ERR
-
-    curl --fail --show-error --location \
-        --retry 5 --retry-all-errors --retry-delay 5 \
-        "$SONAR_URL" -o "${TMP_DIR}/${SONAR_ZIP}"
-
-    unzip -tq "${TMP_DIR}/${SONAR_ZIP}"
-    unzip -q "${TMP_DIR}/${SONAR_ZIP}" -d "$TMP_DIR"
-
-    mv "${TMP_DIR}/sonarqube-${SONAR_VERSION}" "$SONAR_HOME"
-    rm -rf "$TMP_DIR"
-    trap 'rc=$?; echo "ERROR: line ${LINENO}, exit code ${rc}"; exit "$rc"' ERR
-fi
-
-# ---------- Service account ----------
-echo "=== 7. Configuring service account ==="
-
-if ! id "$SONAR_USER" >/dev/null 2>&1; then
-    useradd --system --create-home \
-        --home-dir /home/sonar \
-        --shell /sbin/nologin "$SONAR_USER"
-fi
-
-chown -R "${SONAR_USER}:${SONAR_USER}" "$SONAR_HOME"
-
-# ---------- SonarQube configuration ----------
-echo "=== 8. Configuring database connection ==="
-
-CONF="${SONAR_HOME}/conf/sonar.properties"
-
-set_property() {
-    local key="$1"
-    local value="$2"
-    local tmp
-    tmp="$(mktemp)"
-
-    awk -v key="$key" -v value="$value" '
-        BEGIN { done=0 }
-        {
-            line=$0
-            sub(/^[[:space:]#]*/, "", line)
-            split(line, parts, "=")
-
-            if (parts[1] == key) {
-                if (!done) print key "=" value
-                done=1
-                next
-            }
-            print
-        }
-        END {
-            if (!done) print key "=" value
-        }
-    ' "$CONF" > "$tmp"
-
-    cat "$tmp" > "$CONF"
-    rm -f "$tmp"
-}
-
-set_property "sonar.jdbc.username" "$DB_USER"
-set_property "sonar.jdbc.password" "$DB_PASSWORD"
-set_property "sonar.jdbc.url" \
-    "jdbc:postgresql://127.0.0.1:5432/${DB_NAME}"
-set_property "sonar.web.host" "0.0.0.0"
-set_property "sonar.web.port" "9000"
-
-chown "${SONAR_USER}:${SONAR_USER}" "$CONF"
-chmod 600 "$CONF"
-
-# ---------- Elasticsearch kernel requirements ----------
-echo "=== 9. Applying kernel settings ==="
-
-cat > /etc/sysctl.d/99-sonarqube.conf <<'EOF'
+cat > /etc/sysctl.d/99-sonarqube.conf <<'SYSCTL'
 vm.max_map_count=524288
 fs.file-max=131072
-EOF
+SYSCTL
 
 sysctl --system
 
-# ---------- systemd ----------
-echo "=== 10. Creating systemd service ==="
+if ! id "${SONAR_USER}" >/dev/null 2>&1; then
+    useradd --system \
+        --home-dir "${SONAR_HOME}" \
+        --shell /sbin/nologin \
+        "${SONAR_USER}"
+fi
 
-cat > /etc/systemd/system/sonarqube.service <<EOF
+install -d -o "${SONAR_USER}" -g "${SONAR_USER}" -m 755 \
+    /var/sonarqube \
+    /var/sonarqube/data \
+    /var/sonarqube/temp
+
+# 6. Download and extract SonarQube.
+echo "[6/10] Downloading/checking SonarQube..."
+
+if [[ ! -x "${SONAR_DIR}/bin/linux-x86-64/sonar.sh" ]]; then
+    rm -rf "${SONAR_DIR}"
+
+    if [[ ! -f "${SONAR_ZIP}" ]] ||
+       ! unzip -tq "${SONAR_ZIP}" >/dev/null 2>&1; then
+        rm -f "${SONAR_ZIP}"
+        wget --show-progress \
+            "https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-${SONAR_VERSION}.zip" \
+            -O "${SONAR_ZIP}"
+    fi
+
+    unzip -tq "${SONAR_ZIP}"
+    unzip -oq "${SONAR_ZIP}" -d /opt
+fi
+
+if [[ ! -x "${SONAR_DIR}/bin/linux-x86-64/sonar.sh" ]]; then
+    echo "ERROR: SonarQube extraction failed."
+    exit 1
+fi
+
+# Preserve an existing real directory rather than deleting it.
+if [[ -e "${SONAR_HOME}" && ! -L "${SONAR_HOME}" ]]; then
+    mv "${SONAR_HOME}" "${SONAR_HOME}.backup.$(date +%Y%m%d%H%M%S)"
+fi
+
+ln -sfn "${SONAR_DIR}" "${SONAR_HOME}"
+
+# 7. Configure SonarQube properties without duplicate entries.
+echo "[7/10] Configuring SonarQube..."
+
+touch "${SONAR_CONF}"
+
+# Remove managed settings wherever they occur in the file.
+sed -i -E \
+    '/^[[:space:]]*sonar\.jdbc\.(username|password|url)[[:space:]]*=/d;
+     /^[[:space:]]*sonar\.web\.(host|port|javaOpts)[[:space:]]*=/d;
+     /^[[:space:]]*sonar\.(ce|search)\.javaOpts[[:space:]]*=/d;
+     /^[[:space:]]*sonar\.path\.(data|temp)[[:space:]]*=/d' \
+    "${SONAR_CONF}"
+
+cat >> "${SONAR_CONF}" <<PROPERTIES
+
+# BEGIN LOCALHELP CONFIGURATION
+sonar.jdbc.username=${DB_USER}
+sonar.jdbc.password=${DB_PASS}
+sonar.jdbc.url=jdbc:postgresql://127.0.0.1:5432/${DB_NAME}
+
+sonar.web.host=127.0.0.1
+sonar.web.port=9000
+
+sonar.path.data=/var/sonarqube/data
+sonar.path.temp=/var/sonarqube/temp
+
+sonar.web.javaOpts=-Xms512m -Xmx512m
+sonar.ce.javaOpts=-Xms512m -Xmx512m
+sonar.search.javaOpts=-Xms512m -Xmx512m
+# END LOCALHELP CONFIGURATION
+PROPERTIES
+
+chown -R "${SONAR_USER}:${SONAR_USER}" "${SONAR_DIR}"
+chown -h "${SONAR_USER}:${SONAR_USER}" "${SONAR_HOME}"
+chown root:root "${SONAR_CONF}"
+chmod 640 "${SONAR_CONF}"
+
+# 8. Configure the SonarQube systemd service.
+echo "[8/10] Configuring systemd..."
+
+cat > /etc/systemd/system/sonarqube.service <<SERVICE
 [Unit]
-Description=SonarQube Server
+Description=SonarQube Community Build
 After=network.target postgresql.service
-Requires=postgresql.service
+Wants=postgresql.service
 
 [Service]
-Type=forking
+Type=simple
 User=${SONAR_USER}
 Group=${SONAR_USER}
-Environment="JAVA_HOME=${JAVA_HOME}"
 WorkingDirectory=${SONAR_HOME}
-ExecStart=${SONAR_HOME}/bin/linux-x86-64/sonar.sh start
-ExecStop=${SONAR_HOME}/bin/linux-x86-64/sonar.sh stop
-LimitNOFILE=131072
-LimitNPROC=8192
+Environment="JAVA_HOME=${JAVA_HOME}"
+Environment="SONAR_JAVA_PATH=${JAVA_BIN}"
+ExecStart=${SONAR_HOME}/bin/linux-x86-64/sonar.sh console
 Restart=on-failure
 RestartSec=10
+LimitNOFILE=131072
+LimitNPROC=8192
 TimeoutStartSec=300
 SuccessExitStatus=143
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SERVICE
+
+# 9. Configure Nginx reverse proxy.
+echo "[9/10] Configuring Nginx..."
+
+cat > /etc/nginx/conf.d/sonarqube.conf <<'NGINX'
+server {
+    listen 80;
+    server_name sonar.localhelp.store;
+
+    client_max_body_size 100M;
+
+    location / {
+        proxy_pass http://127.0.0.1:9000;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_connect_timeout 60s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}
+NGINX
+
+nginx -t
+systemctl enable --now nginx
+systemctl reload nginx
+
+# 10. Start SonarQube and wait for readiness.
+echo "[10/10] Starting SonarQube..."
 
 systemctl daemon-reload
 systemctl enable sonarqube
-
-echo "=== 11. Starting SonarQube ==="
-
 systemctl restart sonarqube
 
-echo "=== 12. Waiting for application health ==="
+READY=false
 
 for attempt in $(seq 1 60); do
-    STATUS="$(curl --silent --show-error --max-time 5 \
+    STATUS="$(curl -fsS --max-time 5 \
         http://127.0.0.1:9000/api/system/status 2>/dev/null || true)"
 
-    if echo "$STATUS" | grep -qE '"status"[[:space:]]*:[[:space:]]*"UP"'; then
-        echo "SUCCESS: SonarQube health status is UP."
-        systemctl status sonarqube --no-pager -l
-        echo "URL: http://<EC2-IP>:9000"
-        echo "Database password is stored in ${DB_PASSWORD_FILE}"
-        exit 0
+    if printf '%s' "${STATUS}" |
+        grep -Eq '"status"[[:space:]]*:[[:space:]]*"UP"'; then
+        READY=true
+        break
     fi
 
-    echo "Waiting for SonarQube (${attempt}/60): ${STATUS:-no response}"
-    sleep 5
+    echo "Waiting for SonarQube (${attempt}/60)..."
+    sleep 10
 done
 
-echo "ERROR: SonarQube did not become healthy within 5 minutes."
-systemctl status sonarqube --no-pager -l || true
-tail -n 100 "${SONAR_HOME}/logs/web.log" || true
-tail -n 100 "${SONAR_HOME}/logs/sonar.log" || true
-tail -n 100 "${SONAR_HOME}/logs/es.log" || true
-exit 1
+if [[ "${READY}" != "true" ]]; then
+    echo "ERROR: SonarQube did not become healthy."
+    echo "----- systemd status -----"
+    systemctl status sonarqube --no-pager -l || true
+    echo "----- SonarQube log -----"
+    tail -n 80 "${SONAR_HOME}/logs/sonar.log" || true
+    echo "----- Web log -----"
+    tail -n 80 "${SONAR_HOME}/logs/web.log" || true
+    echo "----- Compute Engine log -----"
+    tail -n 80 "${SONAR_HOME}/logs/ce.log" || true
+    exit 1
+fi
+
+echo
+echo "============================================================"
+echo "SUCCESS: SonarQube is operational."
+echo "URL: http://${DOMAIN}"
+echo "Local health: ${STATUS}"
+echo "Service: systemctl status sonarqube"
+echo "Logs: /var/log/sonarqube-install.log"
+echo "Database password file: ${DB_ENV} (root-only)"
+echo "============================================================"

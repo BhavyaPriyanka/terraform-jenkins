@@ -316,7 +316,17 @@ resource "aws_security_group" "devops_tools" {
     cidr_blocks = var.allowed_cidrs
   }
 
-    egress {
+  ingress {
+    description = "SonarQube HTTP via Nginx"
+
+    from_port = 80
+    to_port   = 80
+    protocol  = "tcp"
+
+    cidr_blocks = var.allowed_cidrs
+  }
+
+  egress {
     description = "Allow HTTPS outbound for package downloads"
 
     from_port   = 443
@@ -326,12 +336,12 @@ resource "aws_security_group" "devops_tools" {
   }
 
 
-     tags = merge(
+  tags = merge(
     local.common_tags,
     {
       Name = "${local.resource_name}-tools-sg"
-    })
-    }
+  })
+}
 
 
 
