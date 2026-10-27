@@ -375,3 +375,8 @@ resource "aws_security_group" "devops_tools" {
 #       Name = "${local.resource_name}-tools-sg"
 #     }
 #   )
+
+# #aws ec2 revoke-security-group-ingress \
+#   --region us-east-1 \
+#   --group-id sg-0bf69cddd5e2e5c8c \
+#   --ip-permissions '[{"IpProtocol":"tcp","FromPort":3306,"ToPort":3306,"UserIdGroupPairs":[{"GroupId":"sg-021b47cd4e30096cd"}]}]'
